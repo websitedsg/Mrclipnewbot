@@ -2,7 +2,9 @@ name: MrClip check
 
 on:
   schedule:
-    - cron: "7 */5 * * *"   # every 5 hours
+    # GitHub uses UTC time. These cover 14:00 in Greece/Albania in summer AND winter;
+    # the "Only at 2pm" step below skips the runs that aren't 14:xx in LOCAL_TZ.
+    - cron: "0 11,12,13 * * *"
   workflow_dispatch:          # "Run workflow" button (works from the GitHub phone app)
     inputs:
       refresh:
@@ -23,22 +25,35 @@ jobs:
       TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
       MRCLIP_SESSION: ${{ secrets.MRCLIP_SESSION }}
       DO_REFRESH: ${{ github.event_name == 'schedule' || inputs.refresh }}
+      LOCAL_TZ: Europe/Athens   # your time zone
+      RUN_HOUR: "14"            # 2pm
       HEADLESS: "true"
       BROWSER_CHANNEL: ""
     steps:
+      - name: Only at 2pm local time
+        if: github.event_name == 'schedule'
+        run: |
+          h=$(TZ="$LOCAL_TZ" date +%H)
+          echo "Local hour in $LOCAL_TZ: $h"
+          if [ "$h" != "$RUN_HOUR" ]; then echo "SKIP=1" >> "$GITHUB_ENV"; fi
+
       - uses: actions/checkout@v4
+        if: env.SKIP != '1'
 
       - uses: actions/setup-python@v5
+        if: env.SKIP != '1'
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install
+        if: env.SKIP != '1'
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Restore saved login + notified list
+        if: env.SKIP != '1'
         uses: actions/cache/restore@v4
         with:
           path: state.enc
@@ -46,6 +61,7 @@ jobs:
           restore-keys: mrclip-state-
 
       - name: Decrypt state
+        if: env.SKIP != '1'
         run: |
           mkdir -p data
           if [ -f state.enc ]; then
@@ -53,17 +69,18 @@ jobs:
           fi
 
       - name: Run bot
+        if: env.SKIP != '1'
         run: python -m bot.once
 
       - name: Encrypt state
-        if: always()
+        if: always() && env.SKIP != '1'
         run: |
           rm -f state.enc
           tar cz -C data $(cd data && ls session.json notified.json seed.sha 2>/dev/null) | \
             openssl enc -aes-256-cbc -pbkdf2 -pass env:TELEGRAM_BOT_TOKEN -out state.enc
 
       - name: Save state
-        if: always()
+        if: always() && env.SKIP != '1'
         uses: actions/cache/save@v4
         with:
           path: state.enc

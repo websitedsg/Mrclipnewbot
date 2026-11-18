@@ -1,6 +1,6 @@
 # MrClip Telegram bot
 
-Every **5 hours** the bot:
+Once a day (2pm) the bot:
 1. opens your mrclip.gr **Submissions** page (logged in as you),
 2. clicks **REFRESH STATS** and waits until all views are fetched (it updates one Telegram message with the %),
 3. goes through **every PENDING page** (NEXT → NEXT → …),
@@ -14,7 +14,8 @@ Telegram commands (only your Telegram ID can use them):
 
 ## ⭐ Easiest: run it free on GitHub (no PC or phone needs to stay on)
 
-GitHub runs the bot by itself every 5 hours (file `.github/workflows/mrclip.yml`).
+GitHub runs the bot by itself **once a day at 2pm Greek time** (file `.github/workflows/mrclip.yml`;
+change `LOCAL_TZ` / `RUN_HOUR` there for another time zone or hour).
 You need a laptop **once, ~3 minutes**, to copy your mrclip login.
 
 **1. Copy your mrclip login (on the laptop, in Chrome)**
@@ -35,15 +36,14 @@ You need a laptop **once, ~3 minutes**, to copy your mrclip login.
 | `TELEGRAM_ADMIN_ID` | `8399379960` |
 
 **3. Start it** — repo → **Actions** tab → **MrClip check** → **Run workflow** → green button.
-Within a few minutes you get Telegram messages. After that it runs by itself every 5 hours.
+Within a few minutes you get Telegram messages. After that it runs by itself every day at 2pm.
 You can press **Run workflow** any time from the GitHub phone app for an extra check.
 
 If the bot says the login expired, repeat steps 1–2 (just update `MRCLIP_SESSION`).
 
 Notes:
 - Your login is kept between runs **encrypted** (with your bot token as the key).
-- Private repos get 2,000 free GitHub minutes/month. If one run takes longer than ~12 minutes,
-  either make the repo public (the code contains no passwords) or change `*/5` to `*/8` in the workflow file.
+- Private repos get 2,000 free GitHub minutes/month. One ~30-minute run a day uses about 1,000. GitHub may start scheduled runs a few minutes late.
 - GitHub may pause schedules on repos with no activity for 60 days — it emails you; one click turns it back on.
 
 ---

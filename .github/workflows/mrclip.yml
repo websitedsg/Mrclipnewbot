@@ -1,0 +1,70 @@
+name: MrClip check
+
+on:
+  schedule:
+    - cron: "7 */5 * * *"   # every 5 hours
+  workflow_dispatch:          # "Run workflow" button (works from the GitHub phone app)
+    inputs:
+      refresh:
+        description: "Click REFRESH STATS first?"
+        type: boolean
+        default: true
+
+concurrency:
+  group: mrclip
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+      MRCLIP_SESSION: ${{ secrets.MRCLIP_SESSION }}
+      DO_REFRESH: ${{ github.event_name == 'schedule' || inputs.refresh }}
+      HEADLESS: "true"
+      BROWSER_CHANNEL: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Restore saved login + notified list
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: mrclip-state-${{ github.run_id }}
+          restore-keys: mrclip-state-
+
+      - name: Decrypt state
+        run: |
+          mkdir -p data
+          if [ -f state.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:TELEGRAM_BOT_TOKEN -in state.enc | tar xz -C data || echo "old state unreadable, starting fresh"
+          fi
+
+      - name: Run bot
+        run: python -m bot.once
+
+      - name: Encrypt state
+        if: always()
+        run: |
+          rm -f state.enc
+          tar cz -C data $(cd data && ls session.json notified.json seed.sha 2>/dev/null) | \
+            openssl enc -aes-256-cbc -pbkdf2 -pass env:TELEGRAM_BOT_TOKEN -out state.enc
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.enc
+          key: mrclip-state-${{ github.run_id }}

@@ -12,7 +12,43 @@ If something goes wrong (for example you got logged out) it messages you, with a
 Telegram commands (only your Telegram ID can use them):
 `/check` refresh + check now · `/scan` check now without refreshing · `/status`
 
-## Setup (Windows/Mac/Linux PC that stays on)
+## ⭐ Easiest: run it free on GitHub (no PC or phone needs to stay on)
+
+GitHub runs the bot by itself every 5 hours (file `.github/workflows/mrclip.yml`).
+You need a laptop **once, ~3 minutes**, to copy your mrclip login.
+
+**1. Copy your mrclip login (on the laptop, in Chrome)**
+1. Open **mrclip.gr** and log in with Google (relvismazi@gmail.com) until you see your dashboard.
+2. Press **F12** → click the **Console** tab.
+3. Type `allow pasting` and press Enter (Chrome asks for this once).
+4. Paste this and press Enter — it copies your login to the clipboard:
+   ```js
+   copy(JSON.stringify({ls:Object.fromEntries(Object.keys(localStorage).filter(k=>k.startsWith('sb-')).map(k=>[k,localStorage.getItem(k)])),ck:document.cookie}))
+   ```
+5. Close the tab. ⚠️ **Don't press "Log out" on mrclip** (on any device) — that would log the bot out too.
+
+**2. Add 3 secrets on GitHub** — repo → **Settings → Secrets and variables → Actions → New repository secret**:
+| Name | Value |
+|---|---|
+| `MRCLIP_SESSION` | paste (Ctrl+V) what you copied in step 1 |
+| `TELEGRAM_BOT_TOKEN` | your **new** token from @BotFather |
+| `TELEGRAM_ADMIN_ID` | `8399379960` |
+
+**3. Start it** — repo → **Actions** tab → **MrClip check** → **Run workflow** → green button.
+Within a few minutes you get Telegram messages. After that it runs by itself every 5 hours.
+You can press **Run workflow** any time from the GitHub phone app for an extra check.
+
+If the bot says the login expired, repeat steps 1–2 (just update `MRCLIP_SESSION`).
+
+Notes:
+- Your login is kept between runs **encrypted** (with your bot token as the key).
+- Private repos get 2,000 free GitHub minutes/month. If one run takes longer than ~12 minutes,
+  either make the repo public (the code contains no passwords) or change `*/5` to `*/8` in the workflow file.
+- GitHub may pause schedules on repos with no activity for 60 days — it emails you; one click turns it back on.
+
+---
+
+## Alternative: run on your own PC (must stay on)
 
 1. Install **Python 3.10+** (python.org; on Windows tick "Add Python to PATH") and **Google Chrome**.
 2. Download this repo (green **Code** button → Download ZIP), unzip, open a terminal in the folder:

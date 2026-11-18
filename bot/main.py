@@ -76,7 +76,9 @@ async def run_cycle(app: Application, do_refresh: bool = True) -> None:
             clips, pages = await site.scan_pending(page)
             await report(app, clips, pages)
         except NotLoggedIn as e:
-            await send(app, f"🔒 {e}\nOn your PC run:  python -m bot.login  and log in again.")
+            await send(app, f"🔒 {e}\nYour mrclip login expired. Copy it again from the laptop and update the "
+                            f"MRCLIP_SESSION secret on GitHub (README step 2-3), "
+                            f"or on a PC run: python -m bot.login")
             await screenshot(app, page)
         except Exception as e:
             log.exception("cycle failed")

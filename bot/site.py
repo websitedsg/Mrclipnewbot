@@ -116,8 +116,15 @@ class MrClip:
             await self.ctx.close()
 
     # ---------- navigation ----------
+    @staticmethod
+    async def _goto(page: Page, url: str) -> None:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+        except Exception as e:  # slow page - we check what loaded right after
+            log.warning("goto %s: %s", url, e)
+
     async def _find_submissions_url(self, page: Page) -> str:
-        await page.goto(config.SITE_URL, wait_until="domcontentloaded")
+        await self._goto(page, config.SITE_URL)
         await page.wait_for_timeout(3000)
         for sel in ('a:has-text("Submissions")', 'a[href*="submission" i]'):
             loc = page.locator(sel)
@@ -133,7 +140,7 @@ class MrClip:
             if not self._subs_url:
                 self._subs_url = await self._find_submissions_url(page)
                 log.info("Submissions page: %s", self._subs_url)
-            await page.goto(self._subs_url, wait_until="domcontentloaded")
+            await self._goto(page, self._subs_url)
             try:
                 await page.locator("text=/REFRESH STATS|RUNNING/i").first.wait_for(timeout=45_000)
             except Exception:

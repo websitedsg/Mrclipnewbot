@@ -1,160 +1,211 @@
-"""
-Browser automation for mrclip.gr (Playwright).
-
-!!! The CSS selectors / URLs in SELECTORS below are GUESSES. !!!
-They must be filled in from screenshots (or the page HTML) of the real
-mrclip.gr admin pages. Everything else in the bot is already wired up.
-"""
+"""Browser automation for mrclip.gr (Playwright, persistent logged-in profile)."""
 import asyncio
 import logging
-import os
+import re
+import time
 from dataclasses import dataclass
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import BrowserContext, Page, Playwright
 
 from . import config
 
 log = logging.getLogger(__name__)
 
-SELECTORS = {
-    # --- login page ---
-    "login_path": "/login",
-    "login_user": "input[name='username'], input[name='email'], input[type='email']",
-    "login_pass": "input[type='password']",
-    "login_submit": "button[type='submit'], input[type='submit']",
-    # something that only exists when you ARE logged in
-    "logged_in_marker": "a[href*='logout']",
 
-    # --- pending clips list (clips waiting for accept/reject) ---
-    "pending_path": "/admin/clips?status=pending",
-    "clip_row": ".clip-row",               # one element per clip
-    "clip_id_attr": "data-id",             # attribute on clip_row holding its id
-    "clip_title": ".clip-title",
-    "clip_link": "a",
-    "approve_btn": "button.approve",
-    "reject_btn": "button.reject",
-
-    # --- approved clips list (where the "refresh views" button lives) ---
-    "approved_path": "/admin/clips?status=approved",
-    "refresh_btn": "button.refresh-views",
-    "next_page": "a[rel='next']",          # pagination; empty string if none
-}
-
-STATE_FILE = os.path.join(config.DATA_DIR, "browser_state.json")
+class NotLoggedIn(Exception):
+    pass
 
 
 @dataclass
 class Clip:
     id: str
-    title: str
+    user: str
+    campaign: str
     url: str
+    views: int
+
+
+async def launch(pw: Playwright, headless: bool) -> BrowserContext:
+    """Open Chrome with the saved profile so the Google login is remembered."""
+    kw = dict(
+        user_data_dir=config.PROFILE_DIR,
+        headless=headless,
+        viewport={"width": 1400, "height": 1000},
+        args=["--disable-blink-features=AutomationControlled"],
+        ignore_default_args=["--enable-automation"],
+    )
+    if config.BROWSER_CHANNEL:
+        try:
+            return await pw.chromium.launch_persistent_context(channel=config.BROWSER_CHANNEL, **kw)
+        except Exception as e:
+            log.warning("Could not start %s (%s) - using bundled Chromium", config.BROWSER_CHANNEL, e)
+    return await pw.chromium.launch_persistent_context(**kw)
+
+
+def parse_views(text: str) -> int | None:
+    t = text.strip().upper().replace(" ", "")
+    m = re.fullmatch(r"(\d+(?:[.,]\d+)?)([KM])", t)
+    if m:
+        return int(float(m.group(1).replace(",", ".")) * (1000 if m.group(2) == "K" else 1_000_000))
+    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", t):
+        return int(re.sub(r"[.,]", "", t))
+    if re.fullmatch(r"\d+", t):
+        return int(t)
+    return None
+
+
+# Runs inside the page: finds every row that has an APPROVE button.
+_SCAN_JS = r"""
+() => {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const headers = [...document.querySelectorAll('th')].map(h => norm(h.innerText).toUpperCase());
+  const rows = [];
+  const btns = [...document.querySelectorAll('button, a, [role=button]')]
+      .filter(b => norm(b.innerText).toUpperCase() === 'APPROVE');
+  for (const b of btns) {
+    let row = b.closest('tr'), cells;
+    if (row) {
+      cells = [...row.children].map(c => norm(c.innerText));
+    } else {
+      row = b.parentElement;
+      while (row && row !== document.body && !/tiktok\.com/i.test(row.innerText) && !row.querySelector('a[href*="tiktok"]'))
+        row = row.parentElement;
+      if (!row || row === document.body) continue;
+      cells = row.innerText.split('\n').map(norm).filter(Boolean);
+    }
+    const a = row.querySelector('a[href*="tiktok"]');
+    rows.push({cells, url: a ? a.href : ''});
+  }
+  return {headers, rows};
+}
+"""
+
+
+def _row_to_clip(headers: list[str], cells: list[str], href: str) -> Clip | None:
+    url = href or next((c for c in cells if "tiktok.com" in c), "")
+    views = None
+    if "VIEWS" in headers and len(cells) == len(headers):
+        views = parse_views(cells[headers.index("VIEWS")])
+    if views is None:  # fallback: first number after the PENDING status
+        start = next((i for i, c in enumerate(cells) if c.upper() == "PENDING"), -1)
+        views = next((v for c in cells[start + 1:] if (v := parse_views(c)) is not None), None)
+    if views is None:
+        return None
+
+    def col(name: str, default: int) -> str:
+        if name in headers and len(cells) == len(headers):
+            return cells[headers.index(name)]
+        return cells[default] if len(cells) > default else ""
+
+    return Clip(id=url or "|".join(cells[:3]), user=col("USER", 0), campaign=col("CAMPAIGN", 1),
+                url=url, views=views)
 
 
 class MrClip:
-    def __init__(self) -> None:
-        self._pw = None
-        self.browser: Browser | None = None
+    def __init__(self, pw: Playwright) -> None:
+        self.pw = pw
         self.ctx: BrowserContext | None = None
-        self.lock = asyncio.Lock()  # one browser action at a time
+        self.lock = asyncio.Lock()
+        self._subs_url = config.SUBMISSIONS_URL
 
     async def start(self) -> None:
-        self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=config.HEADLESS)
-        kw = {"storage_state": STATE_FILE} if os.path.exists(STATE_FILE) else {}
-        self.ctx = await self.browser.new_context(**kw)
+        self.ctx = await launch(self.pw, config.HEADLESS)
 
     async def stop(self) -> None:
         if self.ctx:
-            await self.ctx.storage_state(path=STATE_FILE)
-        if self.browser:
-            await self.browser.close()
-        if self._pw:
-            await self._pw.stop()
+            await self.ctx.close()
 
-    # ---------- helpers ----------
-    def _url(self, key: str) -> str:
-        return config.SITE_URL + SELECTORS[key]
+    # ---------- navigation ----------
+    async def _find_submissions_url(self, page: Page) -> str:
+        await page.goto(config.SITE_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
+        for sel in ('a:has-text("Submissions")', 'a[href*="submission" i]'):
+            loc = page.locator(sel)
+            if await loc.count():
+                href = await loc.first.get_attribute("href")
+                if href:
+                    return href if href.startswith("http") else config.SITE_URL + "/" + href.lstrip("/")
+        raise NotLoggedIn("Couldn't find the Submissions link - are you logged in?")
 
-    async def _page(self, key: str) -> Page:
+    async def open_submissions(self) -> Page:
         page = await self.ctx.new_page()
-        await page.goto(self._url(key), wait_until="domcontentloaded")
-        if not await page.locator(SELECTORS["logged_in_marker"]).count():
-            await self._login(page)
-            await page.goto(self._url(key), wait_until="domcontentloaded")
-        return page
-
-    async def _login(self, page: Page) -> None:
-        log.info("Logging in to mrclip")
-        await page.goto(self._url("login_path"), wait_until="domcontentloaded")
-        await page.fill(SELECTORS["login_user"], config.SITE_USER)
-        await page.fill(SELECTORS["login_pass"], config.SITE_PASS)
-        await page.click(SELECTORS["login_submit"])
-        await page.wait_for_load_state("networkidle")
-        if not await page.locator(SELECTORS["logged_in_marker"]).count():
-            raise RuntimeError("Login failed - check username/password or the login selectors")
-        await self.ctx.storage_state(path=STATE_FILE)
-
-    async def _row(self, page: Page, clip_id: str):
-        sel = f"{SELECTORS['clip_row']}[{SELECTORS['clip_id_attr']}='{clip_id}']"
-        return page.locator(sel).first
-
-    # ---------- public actions ----------
-    async def pending_clips(self) -> list[Clip]:
-        async with self.lock:
-            page = await self._page("pending_path")
+        try:
+            if not self._subs_url:
+                self._subs_url = await self._find_submissions_url(page)
+                log.info("Submissions page: %s", self._subs_url)
+            await page.goto(self._subs_url, wait_until="domcontentloaded")
             try:
-                clips = []
-                for row in await page.locator(SELECTORS["clip_row"]).all():
-                    cid = await row.get_attribute(SELECTORS["clip_id_attr"]) or ""
-                    title_loc = row.locator(SELECTORS["clip_title"])
-                    title = (await title_loc.first.inner_text()).strip() if await title_loc.count() else cid
-                    link_loc = row.locator(SELECTORS["clip_link"])
-                    href = await link_loc.first.get_attribute("href") if await link_loc.count() else ""
-                    if href and href.startswith("/"):
-                        href = config.SITE_URL + href
-                    if cid:
-                        clips.append(Clip(cid, title, href or ""))
-                return clips
-            finally:
-                await page.close()
+                await page.locator("text=/REFRESH STATS|RUNNING/i").first.wait_for(timeout=45_000)
+            except Exception:
+                raise NotLoggedIn("Submissions page didn't load (logged out?)")
+            return page
+        except Exception:
+            await page.close()
+            raise
 
-    async def decide(self, clip_id: str, approve: bool) -> bool:
-        async with self.lock:
-            page = await self._page("pending_path")
-            try:
-                row = await self._row(page, clip_id)
-                if not await row.count():
-                    return False
-                btn = row.locator(SELECTORS["approve_btn" if approve else "reject_btn"])
-                page.once("dialog", lambda d: asyncio.ensure_future(d.accept()))  # "are you sure?"
-                await btn.first.click()
-                await page.wait_for_load_state("networkidle")
+    async def _pending_tab(self, page: Page) -> None:
+        tab = page.get_by_role("button", name=re.compile(r"^\s*PENDING\s*$", re.I))
+        if not await tab.count():
+            tab = page.locator('a, [role=tab]').filter(has_text=re.compile(r"^\s*PENDING\s*$", re.I))
+        if await tab.count():
+            await tab.first.click()
+            await page.wait_for_timeout(2500)
+
+    # ---------- actions ----------
+    async def _running(self, page: Page) -> bool:
+        loc = page.locator("text=/RUNNING|REFRESHING STATS/i")
+        for i in range(await loc.count()):
+            if await loc.nth(i).is_visible():
                 return True
-            finally:
-                await page.close()
+        return False
 
-    async def refresh_all_views(self, progress=None) -> int:
-        """Click 'refresh views' on every approved clip, page by page, slowly."""
-        clicked = 0
-        async with self.lock:
-            page = await self._page("approved_path")
-            try:
-                while True:
-                    buttons = await page.locator(SELECTORS["refresh_btn"]).all()
-                    for b in buttons:
-                        try:
-                            await b.click()
-                            clicked += 1
-                        except Exception as e:  # keep going on single failures
-                            log.warning("refresh click failed: %s", e)
-                        await asyncio.sleep(config.CLICK_DELAY_SEC)
-                        if progress and clicked % 100 == 0:
-                            await progress(clicked)
-                    nxt = SELECTORS["next_page"]
-                    if not nxt or not await page.locator(nxt).count():
-                        break
-                    await page.locator(nxt).first.click()
-                    await page.wait_for_load_state("domcontentloaded")
-            finally:
-                await page.close()
-        return clicked
+    async def refresh_stats(self, page: Page, progress=None) -> None:
+        if not await self._running(page):
+            btn = page.locator('button:has-text("REFRESH STATS"), a:has-text("REFRESH STATS")').first
+            await btn.click()
+            await page.wait_for_timeout(5000)
+        deadline = time.time() + config.REFRESH_TIMEOUT_MIN * 60
+        last = None
+        while await self._running(page):
+            if time.time() > deadline:
+                raise TimeoutError("REFRESH STATS didn't finish in time")
+            body = await page.locator("body").inner_text()
+            m = re.search(r"(\d+)\s*/\s*(\d+)\s*fetched", body, re.I)
+            if m and progress and m.group(0) != last:
+                last = m.group(0)
+                await progress(int(m.group(1)), int(m.group(2)))
+            await asyncio.sleep(20)
+        await page.wait_for_timeout(3000)
+
+    async def scan_pending(self, page: Page) -> tuple[list[Clip], int]:
+        """Go through every PENDING page. Returns (all clips, pages read)."""
+        await page.reload(wait_until="domcontentloaded")
+        await page.locator("text=/REFRESH STATS|RUNNING/i").first.wait_for(timeout=45_000)
+        await self._pending_tab(page)
+        clips: dict[str, Clip] = {}
+        pages = 0
+        prev_sig = None
+        while pages < 500:
+            await page.wait_for_timeout(1500)
+            data = await page.evaluate(_SCAN_JS)
+            sig = tuple(tuple(r["cells"]) for r in data["rows"])
+            if sig == prev_sig:
+                break
+            prev_sig = sig
+            pages += 1
+            for r in data["rows"]:
+                c = _row_to_clip(data["headers"], r["cells"], r["url"])
+                if c:
+                    clips.setdefault(c.id, c)
+            nxt = page.locator('button:has-text("NEXT"), a:has-text("NEXT")').first
+            if not await nxt.count() or await nxt.is_disabled() \
+                    or (await nxt.get_attribute("aria-disabled")) == "true":
+                break
+            await nxt.click()
+            # wait for the rows to change
+            for _ in range(30):
+                await page.wait_for_timeout(500)
+                d2 = await page.evaluate(_SCAN_JS)
+                if tuple(tuple(r["cells"]) for r in d2["rows"]) != sig:
+                    break
+        return list(clips.values()), pages

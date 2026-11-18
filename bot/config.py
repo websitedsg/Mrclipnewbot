@@ -4,22 +4,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _bool(name: str, default: str = "false") -> bool:
+def _bool(name: str, default: str) -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ADMIN_ID = int(os.environ["TELEGRAM_ADMIN_ID"])
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "0"))
 
 SITE_URL = os.getenv("MRCLIP_URL", "https://mrclip.gr").rstrip("/")
-SITE_USER = os.getenv("MRCLIP_USERNAME", "")
-SITE_PASS = os.getenv("MRCLIP_PASSWORD", "")
+SUBMISSIONS_URL = os.getenv("SUBMISSIONS_URL", "").strip()
 
-CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "10"))
-REFRESH_INTERVAL_MIN = int(os.getenv("REFRESH_INTERVAL_MIN", "360"))
-CLICK_DELAY_SEC = float(os.getenv("CLICK_DELAY_SEC", "3"))
-AUTO_APPROVE = _bool("AUTO_APPROVE")
+MIN_VIEWS = int(os.getenv("MIN_VIEWS", "1000"))
+REFRESH_EVERY_HOURS = float(os.getenv("REFRESH_EVERY_HOURS", "5"))
+REFRESH_TIMEOUT_MIN = float(os.getenv("REFRESH_TIMEOUT_MIN", "180"))
+
 HEADLESS = _bool("HEADLESS", "true")
+BROWSER_CHANNEL = os.getenv("BROWSER_CHANNEL", "").strip() or None
 
 DATA_DIR = os.getenv("DATA_DIR", "data")
+PROFILE_DIR = os.path.join(DATA_DIR, "browser-profile")  # keeps you logged in
+NOTIFIED_FILE = os.path.join(DATA_DIR, "notified.json")
 os.makedirs(DATA_DIR, exist_ok=True)
